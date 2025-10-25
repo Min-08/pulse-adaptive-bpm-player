@@ -1,0 +1,51 @@
+# 상태별 Spotify 추천 기본 파라미터 (필요시 자유롭게 조정 가능)
+HighStress:
+  tempo:
+    min: 70
+    target: 80
+    max: 90
+  energy:
+    min: 0.1
+    max: 0.4
+  valence:
+    min: 0.3
+    max: 0.7
+  genres: ["ambient", "classical", "piano", "chill"]
+Focus:
+  tempo:
+    min: 95
+    target: 105
+    max: 110
+  energy:
+    min: 0.3
+    max: 0.6
+  valence:
+    min: 0.4
+    max: 0.7
+  genres: ["lo-fi", "focus", "study", "chill"]
+Flow:
+  tempo:
+    min: 115
+    target: 122
+    max: 130
+  energy:
+    min: 0.6
+    max: 0.8
+  valence:
+    min: 0.4
+    max: 0.8
+  genres: ["edm", "pop", "synthwave", "electronic"]
+LowFocus:
+  tempo:
+    min: 110
+    target: 125
+    max: 140
+  energy:
+    min: 0.5
+    max: 0.8
+  valence:
+    min: 0.5
+    max: 0.8
+  genres: ["lo-fi", "funk", "pop", "rock"]
+llm:
+  enabled_default: false
