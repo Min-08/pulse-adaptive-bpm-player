@@ -1,5 +1,3 @@
----
-
 # Pulse Adaptive BPM Player
 
 Biofeedback 기반으로 음악 BPM을 적응적으로 조절하는 MVP 아키텍처.
@@ -73,5 +71,3 @@ pulse-adaptive-bpm-player/
 * `ai-server/models/state_lgbm.pkl` 모델 로딩으로 규칙 기반 추론 대체.
 * `llm-recommender`에서 OpenAI/Anthropic LLM 호출을 통해 분위기·장르 기반 재랭킹 구현.
 * `playback` 서비스에 Spotify Connect 외 YouTube API, 로컬 파일 재생 로직 추가.
-
----
