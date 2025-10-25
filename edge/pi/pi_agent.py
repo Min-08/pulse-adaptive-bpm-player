@@ -99,7 +99,6 @@ def post_json(url: str, payload: Dict[str, Any], timeout: int = 10) -> Optional[
         LOGGER.warning("JSON 파싱 실패: %s", exc)
     return None
 
-
 SESSION_SECONDS = 0
 LOGGER = configure_logger()
 
@@ -140,4 +139,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()

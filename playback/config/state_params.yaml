@@ -1,4 +1,8 @@
 # 상태별 Spotify 추천 기본 파라미터 (필요시 자유롭게 조정 가능)
+# 모든 값은 임시 기본값입니다. 프로젝트 상황에 맞게 자유롭게 조정하세요.
+# 상태 키: HighStress | Focus | Flow | LowFocus
+# 각 상태별로 tempo(최소/목표/최대), energy/valence 범위, seed genres를 정의합니다.
+
 HighStress:
   tempo:
     min: 70
@@ -11,6 +15,7 @@ HighStress:
     min: 0.3
     max: 0.7
   genres: ["ambient", "classical", "piano", "chill"]
+  
 Focus:
   tempo:
     min: 95
@@ -23,6 +28,7 @@ Focus:
     min: 0.4
     max: 0.7
   genres: ["lo-fi", "focus", "study", "chill"]
+
 Flow:
   tempo:
     min: 115
@@ -35,6 +41,7 @@ Flow:
     min: 0.4
     max: 0.8
   genres: ["edm", "pop", "synthwave", "electronic"]
+
 LowFocus:
   tempo:
     min: 110
@@ -47,5 +54,7 @@ LowFocus:
     min: 0.5
     max: 0.8
   genres: ["lo-fi", "funk", "pop", "rock"]
+
+# (옵션) LLM 재랭킹이 켜진 경우의 파라미터 보정 계수 등 확장 가능
 llm:
   enabled_default: false
