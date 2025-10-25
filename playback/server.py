@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import secrets
+import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -26,6 +28,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+try:
+    from playsound import playsound as playsound_sync
+except Exception:  # pragma: no cover - 모듈 미설치 환경 대비
+    playsound_sync = None
+
 ENV_PATH = find_dotenv()
 if ENV_PATH:
     load_dotenv(ENV_PATH)
@@ -39,7 +46,6 @@ def configure_logger() -> logging.Logger:
     logger.setLevel(logging.INFO)
     if logger.handlers:
         return logger
-
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
     console = logging.StreamHandler()
@@ -109,6 +115,22 @@ class TrackCandidate:
     source: str
 
 
+class LocalLibraryError(RuntimeError):
+    """로컬 음악 라이브러리 관련 예외."""
+
+
+@dataclass
+class LocalTrack:
+    """로컬 라이브러리에 저장된 트랙 정보."""
+
+    track_name: str
+    artist: str
+    bpm: Optional[int]
+    states: List[str]
+    file_name: str
+    file_path: Path
+
+
 class SpotifyTokenStore:
     """Spotify 토큰 저장 및 갱신을 담당한다."""
 
@@ -176,6 +198,171 @@ class SpotifyTokenStore:
 TOKEN_STORE = SpotifyTokenStore(TOKEN_PATH)
 
 
+class LocalMusicLibrary:
+    """CSV 기반 로컬 음악 라이브러리를 관리한다."""
+
+    def __init__(self, root_dir: Path) -> None:
+        self.root_dir = root_dir
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.tracks_dir = self.root_dir / "tracks"
+        self.tracks_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_path = self.root_dir / "library.csv"
+        self._tracks: List[LocalTrack] = []
+        self._lock = threading.Lock()
+        self.reload()
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return "".join(ch.lower() for ch in value if ch.isalnum())
+
+    @staticmethod
+    def _parse_states(raw: str) -> List[str]:
+        if not raw:
+            return []
+        separators = [";", ","]
+        states: List[str] = []
+        token = raw
+        for sep in separators:
+            token = token.replace(sep, ";")
+        for part in token.split(";"):
+            cleaned = part.strip()
+            if cleaned:
+                states.append(cleaned.casefold())
+        return states
+
+    def _resolve_file_path(self, file_name: str) -> Path:
+        candidate = Path(file_name)
+        if candidate.is_absolute():
+            return candidate
+        return self.tracks_dir / candidate.name
+
+    def _load_row(self, row: Dict[str, str]) -> LocalTrack:
+        track_name = (row.get("track_name") or "").strip()
+        artist = (row.get("artist") or "").strip()
+        bpm_value = (row.get("bpm") or "").strip()
+        file_name = (row.get("file_name") or "").strip()
+        states_raw = (row.get("states") or "").strip()
+        if not track_name or not file_name:
+            raise LocalLibraryError("track_name 또는 file_name 값이 비어 있어 로컬 곡을 무시합니다.")
+        file_path = self._resolve_file_path(file_name)
+        if file_path.suffix.lower() != ".mp3":
+            raise LocalLibraryError(f"MP3 파일이 아니어서 제외되었습니다: {file_path}")
+        if not file_path.exists():
+            raise LocalLibraryError(f"로컬 음악 파일을 찾을 수 없습니다: {file_path}")
+        if self._normalize(track_name) != self._normalize(file_path.stem):
+            raise LocalLibraryError(
+                f"곡명과 파일명이 일치하지 않아 제외되었습니다: {track_name} != {file_path.stem}"
+            )
+        bpm: Optional[int] = None
+        if bpm_value:
+            try:
+                bpm = int(float(bpm_value))
+            except ValueError:
+                LOGGER.warning("BPM 값을 정수로 변환하지 못해 None으로 처리합니다: %s", bpm_value)
+        states = self._parse_states(states_raw)
+        return LocalTrack(
+            track_name=track_name,
+            artist=artist,
+            bpm=bpm,
+            states=states,
+            file_name=file_name,
+            file_path=file_path,
+        )
+
+    def reload(self) -> int:
+        with self._lock:
+            self._tracks = []
+            if not self.csv_path.exists():
+                LOGGER.warning(
+                    "로컬 라이브러리 CSV를 찾을 수 없어 빈 라이브러리로 동작합니다: %s",
+                    self.csv_path,
+                )
+                return 0
+            with self.csv_path.open("r", encoding="utf-8") as fp:
+                reader = csv.DictReader(fp)
+                for row in reader:
+                    try:
+                        track = self._load_row(row)
+                    except LocalLibraryError as exc:
+                        LOGGER.warning("로컬 트랙을 무시합니다: %s", exc)
+                        continue
+                    except Exception as exc:  # pragma: no cover - 예외 안전장치
+                        LOGGER.warning("로컬 트랙 로드 중 알 수 없는 오류: %s", exc)
+                        continue
+                    self._tracks.append(track)
+            LOGGER.info("로컬 음악 라이브러리 로드 완료 (트랙 수: %d)", len(self._tracks))
+            return len(self._tracks)
+
+    def pick_track(self, state: str, bpm_target: int) -> LocalTrack:
+        with self._lock:
+            if not self._tracks:
+                raise LocalLibraryError("로컬 라이브러리에 재생 가능한 곡이 없습니다.")
+            normalized_state = (state or "").casefold()
+            candidates = [
+                track for track in self._tracks if not track.states or normalized_state in track.states
+            ]
+            if not candidates:
+                candidates = list(self._tracks)
+
+        def score(track: LocalTrack) -> float:
+            if bpm_target and track.bpm:
+                return abs(track.bpm - bpm_target)
+            if track.bpm is not None:
+                return abs(track.bpm - 100)
+            return 9999.0
+
+        ordered = sorted(candidates, key=score)
+        for track in ordered:
+            if not track.file_path.exists():
+                LOGGER.warning("선택 후보 파일이 사라져 건너뜁니다: %s", track.file_path)
+                continue
+            return track
+        raise LocalLibraryError("조건에 맞는 로컬 음악을 찾지 못했습니다.")
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._tracks)
+
+
+class LocalPlaybackEngine:
+    """로컬 MP3 재생을 담당하는 엔진."""
+
+    def __init__(self, library: LocalMusicLibrary) -> None:
+        self.library = library
+
+    def play(self, track: LocalTrack) -> bool:
+        if not track.file_path.exists():
+            LOGGER.error("로컬 재생 파일이 존재하지 않습니다: %s", track.file_path)
+            return False
+
+        if playsound_sync is not None:
+            def _runner() -> None:
+                try:
+                    playsound_sync(str(track.file_path))
+                except Exception as exc:  # pragma: no cover - 외부 재생 오류 대비
+                    LOGGER.error("playsound 재생 중 오류가 발생했습니다: %s", exc)
+
+            thread = threading.Thread(target=_runner, daemon=True)
+            thread.start()
+            return True
+
+        try:
+            if os.name == "nt":
+                os.startfile(str(track.file_path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(track.file_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["xdg-open", str(track.file_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as exc:  # pragma: no cover - OS 종속 오류 대비
+            LOGGER.error("운영체제 기본 플레이어 실행 실패: %s", exc)
+            return False
+
+
+LOCAL_LIBRARY = LocalMusicLibrary(Path(os.getenv("LOCAL_MUSIC_DIR", "playback/local_playlist")))
+LOCAL_PLAYBACK_ENGINE = LocalPlaybackEngine(LOCAL_LIBRARY)
+
+
 def cleanup_oauth_state() -> None:
     """만료된 OAuth state 값을 정리한다."""
     now = time.time()
@@ -187,7 +374,7 @@ def cleanup_oauth_state() -> None:
 def determine_mode() -> str:
     """환경 변수 기반 재생 모드를 반환한다."""
     mode = os.getenv("PLAYBACK_MODE", "spotify").lower()
-    if mode not in {"spotify", "youtube", "local"}:
+    if mode not in {"spotify", "local"}:
         return "spotify"
     return mode
 
@@ -219,7 +406,9 @@ def load_state_params(force: bool = False) -> Dict[str, Any]:
 
 def reload_state_params() -> Dict[str, Any]:
     """외부 요청으로 구성 파일을 재로딩한다."""
-    return load_state_params(force=True)
+    config = load_state_params(force=True)
+    LOCAL_LIBRARY.reload()
+    return config
 
 
 def get_params_for_state(state: str, bpm_target: Optional[int], cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -477,6 +666,53 @@ def record_cooldown(candidate: TrackCandidate) -> None:
             PLAYED_ARTISTS[artist] = now
 
 
+def handle_local_playback(request: PlaybackRequest, source_label: str) -> PlaybackResponse:
+    """로컬 라이브러리에서 곡을 선택해 재생한다."""
+    try:
+        track = LOCAL_LIBRARY.pick_track(request.state, request.bpm_target)
+    except LocalLibraryError as exc:
+        LOGGER.error("로컬 트랙 선택 실패: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    success = LOCAL_PLAYBACK_ENGINE.play(track)
+    if not success:
+        LOGGER.error("로컬 음악 재생에 실패했습니다: %s", track.file_path)
+        raise HTTPException(
+            status_code=500,
+            detail="로컬 음악 재생 엔진에서 오류가 발생했습니다. 로그를 확인하세요.",
+        )
+
+    candidate = TrackCandidate(
+        uri=f"local://{track.file_name}",
+        track_id=track.file_name,
+        name=track.track_name,
+        artists=[track.artist] if track.artist else [],
+        tempo=track.bpm,
+        source=source_label,
+    )
+    record_cooldown(candidate)
+    artist_label = track.artist or "알 수 없음"
+    notes = f"로컬 재생 곡: {track.track_name} / 아티스트: {artist_label}".strip()
+    log_playback_event(
+        request.state,
+        request.bpm_target,
+        "local_files",
+        candidate,
+        source_label,
+        notes=notes,
+    )
+    response = PlaybackResponse(
+        ok=True,
+        mode="local",
+        track_uri=candidate.uri,
+        device="local_files",
+        source=source_label,
+        notes=notes,
+    )
+    LOGGER.info("로컬 음악 재생 성공: %s", response.model_dump())
+    return response
+
+
 def build_login_url(state: str) -> str:
     """Spotify 인가 URL을 생성한다."""
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
@@ -554,21 +790,16 @@ def list_devices() -> Dict[str, Any]:
 def reload_config() -> Dict[str, Any]:
     """상태별 추천 파라미터 구성을 재로딩한다."""
     config = reload_state_params()
-    return {"loaded": True, "states": list(config.keys())}
+    return {
+        "loaded": True,
+        "states": list(config.keys()),
+        "local_tracks": LOCAL_LIBRARY.count(),
+    }
 
 
-def handle_non_spotify_mode(request: PlaybackRequest, mode: str) -> PlaybackResponse:
-    """Spotify 외 모드일 때 기본 모킹 응답을 반환한다."""
-    response = PlaybackResponse(
-        ok=True,
-        mode=mode,
-        track_uri=None,
-        device=None,
-        source="mock",
-        notes="Spotify 외 모드는 아직 구현되지 않아 모킹으로 응답합니다.",
-    )
-    LOGGER.info("모킹 모드 응답: %s", response.model_dump())
-    return response
+def handle_local_mode(request: PlaybackRequest) -> PlaybackResponse:
+    """환경 설정이 로컬 모드일 때 로컬 음악을 재생한다."""
+    return handle_local_playback(request, "local_mode")
 
 
 @app.post("/set_target", response_model=PlaybackResponse)
@@ -576,7 +807,7 @@ def set_target(request: PlaybackRequest) -> PlaybackResponse:
     """목표 BPM과 상태를 받아 Spotify 재생을 트리거한다."""
     mode = determine_mode()
     if mode != "spotify":
-        return handle_non_spotify_mode(request, mode)
+        return handle_local_mode(request)
     try:
         token = TOKEN_STORE.get_access_token()
     except SpotifyAuthError as exc:
@@ -648,15 +879,15 @@ def set_target(request: PlaybackRequest) -> PlaybackResponse:
             break
 
     if selected is None:
-        LOGGER.error("모든 후보 재생에 실패했습니다. 로컬 폴백을 반환합니다.")
-        return PlaybackResponse(
-            ok=True,
-            mode="local_fallback",
-            track_uri=None,
-            device=expected_device_name,
-            source="fallback",
-            notes="Spotify 재생에 실패했습니다. 로컬 재생 TODO.",
-        )
+        LOGGER.error("모든 Spotify 후보 재생에 실패해 로컬 폴백을 시도합니다.")
+        try:
+            return handle_local_playback(request, "spotify_fallback")
+        except HTTPException as exc:
+            LOGGER.error("로컬 폴백도 실패했습니다: %s", exc.detail)
+            raise HTTPException(
+                status_code=502,
+                detail="Spotify와 로컬 재생 모두 실패했습니다. 로그를 확인하세요.",
+            ) from exc
 
     response = PlaybackResponse(
         ok=True,
