@@ -63,6 +63,3 @@ pulse-adaptive-bpm-player/
 - Playback 서비스: Spotify OAuth·추천·디바이스 탐색·재생을 지원하며, YouTube/로컬 재생 폴백 로직은 아직 TODO
 - Edge Pi 에이전트: 합성 데이터를 주기적으로 전송하며, 실제 센서 연동(시리얼/BLE) 구현이 남아 있음
 
-<!-- <<<<<<< codex/create-mvp-for-pulse-adaptive-bpm-player-t5xngi -->
-<!-- ======= -->
-<!-- >>>>>>> -->
