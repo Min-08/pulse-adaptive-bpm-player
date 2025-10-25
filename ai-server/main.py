@@ -29,6 +29,9 @@ except Exception:  # pragma: no cover - joblib 미설치 대비
     joblib_load = None
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 부팅/로깅
+# ──────────────────────────────────────────────────────────────────────────────
 ENV_PATH = find_dotenv()
 if ENV_PATH:
     load_dotenv(ENV_PATH)
@@ -51,6 +54,9 @@ logger.add(
     enqueue=True,
 )
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 설정/모델 경로 및 기본값
+# ──────────────────────────────────────────────────────────────────────────────
 CONFIG_PATH = Path("ai-server/config/model.yaml")
 DEFAULT_CONFIG: Dict[str, Any] = {
     "sqi": {
@@ -80,15 +86,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
 }
 CONFIG_CACHE: Dict[str, Any] = {"loaded_at": 0.0, "data": deepcopy(DEFAULT_CONFIG)}
+
+# 모델 핸들
 STATE_MODEL = None
 STATE_MODEL_AVAILABLE = False
 SQI_MODEL = None
 SQI_MODEL_AVAILABLE = False
 
-
+# ──────────────────────────────────────────────────────────────────────────────
+# 데이터 스키마
+# ──────────────────────────────────────────────────────────────────────────────
 class FeatureSet(BaseModel):
     """Pi 에이전트가 전달하는 생체 특징 스키마."""
-
     hr_mean: float = Field(..., description="최근 10초 평균 심박수")
     hr_std: float = Field(..., ge=0, description="심박수 표준편차")
     rmssd: float = Field(..., ge=0, description="RMSSD 값")
@@ -144,10 +153,11 @@ SQI_FEATURES = [
     "pnn50",
 ]
 
-
+# ──────────────────────────────────────────────────────────────────────────────
+# 설정/모델 로딩
+# ──────────────────────────────────────────────────────────────────────────────
 def deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     """재귀적으로 딕셔너리를 병합한다."""
-
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             base[key] = deep_update(base.get(key, {}), value)
@@ -158,7 +168,6 @@ def deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]
 
 def load_config(force: bool = False) -> Dict[str, Any]:
     """YAML 구성을 로드하고 캐시에 저장한다."""
-
     if not force and CONFIG_CACHE["data"] is not None:
         return CONFIG_CACHE["data"]
     merged = deepcopy(DEFAULT_CONFIG)
@@ -177,7 +186,6 @@ def load_config(force: bool = False) -> Dict[str, Any]:
 
 def _load_serialized(path: Path) -> Any:
     """joblib이 없을 때 pickle로 대체 로딩한다."""
-
     if joblib_load is not None:
         return joblib_load(path)
     with path.open("rb") as fp:
@@ -186,7 +194,6 @@ def _load_serialized(path: Path) -> Any:
 
 def load_models(config: Optional[Dict[str, Any]] = None) -> None:
     """LightGBM 상태 모델과 SQI 모델을 로드한다."""
-
     global STATE_MODEL, STATE_MODEL_AVAILABLE, SQI_MODEL, SQI_MODEL_AVAILABLE
     cfg = config or load_config()
 
@@ -198,7 +205,7 @@ def load_models(config: Optional[Dict[str, Any]] = None) -> None:
             STATE_MODEL = _load_serialized(model_path)
             STATE_MODEL_AVAILABLE = True
             logger.info("상태 분류 LightGBM 모델을 로드했습니다: {}", model_path)
-        except Exception as exc:  # pragma: no cover - 모델 로딩 실패 대비
+        except Exception as exc:  # pragma: no cover
             logger.error("LightGBM 모델 로딩 실패로 규칙 기반으로 폴백합니다: {}", exc)
             STATE_MODEL = None
             STATE_MODEL_AVAILABLE = False
@@ -218,7 +225,7 @@ def load_models(config: Optional[Dict[str, Any]] = None) -> None:
             SQI_MODEL = _load_serialized(sqi_path)
             SQI_MODEL_AVAILABLE = True
             logger.info("SQI RandomForest 모델을 로드했습니다: {}", sqi_path)
-        except Exception as exc:  # pragma: no cover - 모델 로딩 실패 대비
+        except Exception as exc:  # pragma: no cover
             logger.error("SQI 모델 로딩 실패로 로컬 SQI만 사용합니다: {}", exc)
             SQI_MODEL = None
             SQI_MODEL_AVAILABLE = False
@@ -230,10 +237,11 @@ def load_models(config: Optional[Dict[str, Any]] = None) -> None:
         SQI_MODEL = None
         SQI_MODEL_AVAILABLE = False
 
-
+# ──────────────────────────────────────────────────────────────────────────────
+# 규칙/추론 유틸
+# ──────────────────────────────────────────────────────────────────────────────
 def rule_based_state(features: FeatureSet, config: Dict[str, Any]) -> str:
     """규칙 기반 상태 분류 로직."""
-
     rules = config.get("rules", {})
     rmssd_low = float(rules.get("rmssd_low", 20))
     rmssd_high = float(rules.get("rmssd_high", 35))
@@ -254,7 +262,6 @@ def rule_based_state(features: FeatureSet, config: Dict[str, Any]) -> str:
 
 def run_sqi_model(features: FeatureSet) -> Optional[float]:
     """SQI RandomForest 모델 추론."""
-
     if not SQI_MODEL_AVAILABLE or SQI_MODEL is None:
         return None
     sample = np.array([[getattr(features, name, 0.0) for name in SQI_FEATURES]])
@@ -266,14 +273,13 @@ def run_sqi_model(features: FeatureSet) -> Optional[float]:
             return float(np.clip(proba[0][0], 0.0, 1.0))
         prediction = SQI_MODEL.predict(sample)
         return float(np.clip(prediction[0], 0.0, 1.0))
-    except Exception as exc:  # pragma: no cover - 모델 예측 실패 대비
+    except Exception as exc:  # pragma: no cover
         logger.error("SQI 모델 추론 실패로 로컬 SQI만 사용합니다: {}", exc)
         return None
 
 
 def evaluate_quality(features: FeatureSet, config: Dict[str, Any]) -> Tuple[bool, float, Optional[float]]:
     """로컬 SQI와 ML SQI를 결합해 최종 품질을 산출한다."""
-
     sqi_cfg = config.get("sqi", {})
     min_valid = float(sqi_cfg.get("min_valid", 0.5))
     ml_floor = float(sqi_cfg.get("ml_floor", 0.0))
@@ -290,7 +296,6 @@ def evaluate_quality(features: FeatureSet, config: Dict[str, Any]) -> Tuple[bool
 
 def model_inference(features: FeatureSet, effective_sqi: float) -> Optional[Tuple[str, float]]:
     """LightGBM 모델 기반 상태 추론."""
-
     if not STATE_MODEL_AVAILABLE or STATE_MODEL is None:
         return None
     feature_dict = {name: getattr(features, name) for name in NUMERIC_FEATURES}
@@ -306,14 +311,13 @@ def model_inference(features: FeatureSet, effective_sqi: float) -> Optional[Tupl
             proba = STATE_MODEL.predict_proba(frame)[0]
             confidence = float(np.max(proba))
         return str(prediction), confidence
-    except Exception as exc:  # pragma: no cover - 모델 예측 실패 대비
+    except Exception as exc:  # pragma: no cover
         logger.error("LightGBM 추론 실패로 규칙 기반으로 폴백합니다: {}", exc)
         return None
 
 
 def apply_hysteresis(device_id: str, new_state: str, config: Dict[str, Any]) -> str:
     """상태가 너무 자주 바뀌지 않도록 히스테리시스를 적용한다."""
-
     hysteresis_cfg = config.get("hysteresis", {})
     min_hold = float(hysteresis_cfg.get("min_hold_seconds", 120))
     now = time.time()
@@ -335,7 +339,6 @@ def apply_hysteresis(device_id: str, new_state: str, config: Dict[str, Any]) -> 
 
 def smooth_bpm(device_id: str, target_state: str, config: Dict[str, Any]) -> int:
     """상태별 기본 BPM을 스무딩하여 점진적으로 변경한다."""
-
     smoothing_cfg = config.get("smoothing", {})
     alpha = float(smoothing_cfg.get("alpha", 0.15))
     bpm_policy = config.get("bpm_policy", {})
@@ -366,7 +369,6 @@ def log_session_row(
     sqi_ml: Optional[float],
 ) -> None:
     """세션 로그 CSV에 추론 결과를 기록한다."""
-
     path = Path("data/session_log.csv")
     is_new = not path.exists()
     with path.open("a", encoding="utf-8", newline="") as fp:
@@ -384,13 +386,15 @@ def log_session_row(
         fp.write(",".join(map(str, row)) + "\n")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# FastAPI
+# ──────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Pulse Adaptive AI Server", version="1.2.0")
 
 
 @app.on_event("startup")
 def startup() -> None:
     """애플리케이션 기동 시 설정과 모델을 로드한다."""
-
     config = load_config(force=True)
     load_models(config)
 
@@ -398,7 +402,6 @@ def startup() -> None:
 @app.post("/infer", response_model=InferenceResponse)
 def infer(request: InferenceRequest) -> InferenceResponse:
     """생체 특징을 받아 상태·BPM을 산출한다."""
-
     config = load_config()
     features = request.features
     device_id = request.device_id
@@ -441,7 +444,6 @@ def infer(request: InferenceRequest) -> InferenceResponse:
 @app.get("/config/reload")
 def reload_config() -> Dict[str, Any]:
     """설정과 모델을 재로딩한다."""
-
     config = load_config(force=True)
     load_models(config)
     return {
@@ -454,6 +456,4 @@ def reload_config() -> Dict[str, Any]:
 @app.get("/health")
 def healthcheck() -> Dict[str, str]:
     """상태 확인용 엔드포인트."""
-
     return {"status": "ok"}
-
