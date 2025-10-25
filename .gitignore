@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -17,3 +17,5 @@ data/*
 !data/.gitkeep
 ai-server/models/*
 !ai-server/models/.gitkeep
+playback/.tokens/
+playback/config/state_params.local.yaml

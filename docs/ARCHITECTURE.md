@@ -31,3 +31,10 @@
 - `ai-server/models/state_lgbm.pkl` 경로에 LightGBM 모델을 배치해 추론 로직을 대체 예정
 - LLM 재랭커는 OpenAI/Anthropic API 호출을 통해 분위기/장르 기반 정렬을 지원 예정
 - Playback 서비스는 Spotify Connect, YouTube API, 로컬 라이브러리 재생으로 확장될 예정
+
+## Spotify 연동 흐름
+- Playback 서비스는 `/login` → `/callback` OAuth 플로우로 Spotify 토큰을 확보하고 `playback/.tokens/spotify.json`에 저장한다.
+- 상태별 추천 파라미터는 `playback/config/state_params.yaml`에서 로드되며, 필요 시 `/config/reload` 엔드포인트로 런타임에 갱신할 수 있다.
+- `/set_target` 호출 시 상태·BPM에 따라 Spotify Recommendations API를 조회하고, LLM 재랭커(옵션)와 쿨다운 필터를 거쳐 Connect 디바이스(`SPOTIFY_DEVICE_NAME`)로 재생을 시작한다.
+- 재생 결과는 `data/playback_log.csv`에 기록되며, Spotify 디바이스를 찾지 못하거나 재생이 실패하면 로컬 폴백 모드로 응답한다.
+=======
