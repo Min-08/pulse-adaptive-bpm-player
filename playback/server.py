@@ -46,10 +46,7 @@ def configure_logger() -> logging.Logger:
     logger.setLevel(logging.INFO)
     if logger.handlers:
         return logger
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
     console = logging.StreamHandler()
     console.setFormatter(formatter)
@@ -69,9 +66,7 @@ LOGGER = configure_logger()
 
 TOKEN_PATH = Path("playback/.tokens/spotify.json")
 TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-STATE_CONFIG_PATH = Path(
-    os.getenv("STATE_PARAMS_PATH", "playback/config/state_params.yaml")
-)
+STATE_CONFIG_PATH = Path(os.getenv("STATE_PARAMS_PATH", "playback/config/state_params.yaml"))
 STATE_CONFIG_CACHE: Dict[str, Any] = {"loaded_at": 0.0, "data": None}
 STATE_CONFIG_LOCK = threading.Lock()
 DEFAULT_STATE_PARAMS: Dict[str, Any] = {
@@ -462,10 +457,7 @@ def refresh_access_token(refresh_token: str) -> Dict[str, Any]:
         "Authorization": f"Basic {auth_header}",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-    }
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
     response = requests.post(token_url, data=data, headers=headers, timeout=10)
     if response.status_code != 200:
         LOGGER.error("Spotify 토큰 갱신 실패: %s", response.text)
@@ -486,11 +478,7 @@ def exchange_code_for_token(code: str) -> Dict[str, Any]:
         "Authorization": f"Basic {auth_header}",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect_uri,
-    }
+    data = {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri}
     response = requests.post(token_url, data=data, headers=headers, timeout=10)
     if response.status_code != 200:
         LOGGER.error("Spotify 인가 코드 교환 실패: %s", response.text)
@@ -574,9 +562,7 @@ def fetch_audio_features(token: str, track_ids: List[str]) -> Dict[str, float]:
     for i in range(0, len(track_ids), 100):
         chunk = track_ids[i : i + 100]
         params = {"ids": ",".join(chunk)}
-        response = request_spotify_api(
-            "GET", "https://api.spotify.com/v1/audio-features", token, params=params
-        )
+        response = request_spotify_api("GET", "https://api.spotify.com/v1/audio-features", token, params=params)
         if response.status_code != 200:
             LOGGER.warning("오디오 피쳐 조회 실패: %s", response.text)
             continue
@@ -595,9 +581,7 @@ def call_llm_reranker(state: str, bpm_target: int, candidates: List[TrackCandida
     payload = {
         "state": state,
         "bpm_target": bpm_target,
-        "candidates": [
-            {"id": candidate.uri, "bpm": candidate.tempo} for candidate in candidates
-        ],
+        "candidates": [{"id": c.uri, "bpm": c.tempo} for c in candidates],
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
@@ -642,11 +626,7 @@ def attempt_playback(token: str, device_id: str, candidate: TrackCandidate) -> b
     params = {"device_id": device_id}
     try:
         response = request_spotify_api(
-            "PUT",
-            "https://api.spotify.com/v1/me/player/play",
-            token,
-            params=params,
-            json=payload,
+            "PUT", "https://api.spotify.com/v1/me/player/play", token, params=params, json=payload
         )
     except HTTPException as exc:
         LOGGER.warning("트랙 재생 요청 중 예외 발생(%s): %s", candidate.uri, exc.detail)
@@ -674,9 +654,7 @@ def log_playback_event(
         if is_new:
             writer.writerow(["ts", "state", "bpm_target", "device", "track_uri", "source", "notes"])
         timestamp = datetime.utcnow().isoformat()
-        writer.writerow(
-            [timestamp, state, bpm_target, device, candidate.uri, source, notes]
-        )
+        writer.writerow([timestamp, state, bpm_target, device, candidate.uri, source, notes])
 
 
 def record_cooldown(candidate: TrackCandidate) -> None:
@@ -851,7 +829,7 @@ def set_target(request: PlaybackRequest) -> PlaybackResponse:
 
     ranked_ids = call_llm_reranker(request.state, request.bpm_target, candidates)
     if ranked_ids:
-        id_to_candidate = {candidate.uri: candidate for candidate in candidates}
+        id_to_candidate = {c.uri: c for c in candidates}
         ranked_uri_set = {uri for uri in ranked_ids if uri in id_to_candidate}
         ordered = [id_to_candidate[uri] for uri in ranked_ids if uri in id_to_candidate]
         remaining = [c for c in candidates if c.uri not in ranked_uri_set]
@@ -864,9 +842,7 @@ def set_target(request: PlaybackRequest) -> PlaybackResponse:
 
     filtered_candidates = apply_cooldown_filter(ordered_candidates)
     if not filtered_candidates:
-        LOGGER.warning(
-            "쿨다운 필터로 인해 사용 가능한 후보가 없습니다. 캐시를 무시하고 전체 후보를 사용합니다."
-        )
+        LOGGER.warning("쿨다운 필터로 사용 가능한 후보가 없어 전체 후보 사용")
         filtered_candidates = ordered_candidates
 
     expected_device_name = os.getenv("SPOTIFY_DEVICE_NAME", "")
