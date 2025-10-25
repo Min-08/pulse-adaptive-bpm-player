@@ -1,0 +1,23 @@
+sqi:
+  min_valid: 0.5
+  ml_floor: 0.4
+  ml_enabled: true
+  ml_model_path: ai-server/models/sqi_rf.pkl
+rules:
+  rmssd_low: 20
+  rmssd_high: 35
+  hr_flow_min: 90
+  hr_flow_max: 110
+  hr_z_high: 0.7
+hysteresis:
+  min_hold_seconds: 120
+smoothing:
+  alpha: 0.15
+bpm_policy:
+  HighStress: 75
+  Focus: 100
+  Flow: 120
+  LowFocus: 125
+model:
+  path: ai-server/models/state_lgbm.pkl
+  enabled: true
