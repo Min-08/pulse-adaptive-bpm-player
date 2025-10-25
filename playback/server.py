@@ -1,4 +1,4 @@
-"""Spotify 연동을 포함한 음악 재생 FastAPI 서버."""
+"""Spotify 및 로컬 백업 재생을 담당하는 FastAPI 서버."""
 
 from __future__ import annotations
 
@@ -33,13 +33,18 @@ try:
 except Exception:  # pragma: no cover - 모듈 미설치 환경 대비
     playsound_sync = None
 
+# ------------------------------------------------------------------
+# 환경 변수 로드
+# ------------------------------------------------------------------
 ENV_PATH = find_dotenv()
 if ENV_PATH:
     load_dotenv(ENV_PATH)
 else:
     load_dotenv()
 
-
+# ------------------------------------------------------------------
+# 로거 설정
+# ------------------------------------------------------------------
 def configure_logger() -> logging.Logger:
     """콘솔 및 회전 파일 로그를 설정한다."""
     logger = logging.getLogger("playback")
@@ -64,8 +69,12 @@ def configure_logger() -> logging.Logger:
 
 LOGGER = configure_logger()
 
+# ------------------------------------------------------------------
+# 전역 상수/상태
+# ------------------------------------------------------------------
 TOKEN_PATH = Path("playback/.tokens/spotify.json")
 TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 STATE_CONFIG_PATH = Path(os.getenv("STATE_PARAMS_PATH", "playback/config/state_params.yaml"))
 STATE_CONFIG_CACHE: Dict[str, Any] = {"loaded_at": 0.0, "data": None}
 STATE_CONFIG_LOCK = threading.Lock()
@@ -77,6 +86,7 @@ DEFAULT_STATE_PARAMS: Dict[str, Any] = {
         "genres": ["lo-fi", "focus", "study", "chill"],
     }
 }
+
 RECOMMENDATION_CACHE: TTLCache = TTLCache(maxsize=64, ttl=900)
 COOLDOWN_SECONDS = 1800
 PLAYED_TRACKS: Dict[str, float] = {}
@@ -84,15 +94,15 @@ PLAYED_ARTISTS: Dict[str, float] = {}
 OAUTH_STATE: Dict[str, float] = OrderedDict()
 OAUTH_STATE_TTL = 600
 
-
+# ------------------------------------------------------------------
+# 모델/예외/스키마
+# ------------------------------------------------------------------
 class SpotifyAuthError(RuntimeError):
     """Spotify 인증 관련 예외."""
-
 
 class PlaybackRequest(BaseModel):
     bpm_target: int = Field(..., ge=0)
     state: str = Field(..., min_length=1)
-
 
 class PlaybackResponse(BaseModel):
     ok: bool
@@ -102,11 +112,9 @@ class PlaybackResponse(BaseModel):
     source: Optional[str] = None
     notes: Optional[str] = None
 
-
 @dataclass
 class TrackCandidate:
     """재생 후보 트랙 정보."""
-
     uri: str
     track_id: str
     name: str
@@ -114,15 +122,12 @@ class TrackCandidate:
     tempo: Optional[float]
     source: str
 
-
 class LocalLibraryError(RuntimeError):
     """로컬 음악 라이브러리 관련 예외."""
-
 
 @dataclass
 class LocalTrack:
     """로컬 라이브러리에 저장된 트랙 정보."""
-
     track_name: str
     artist: str
     bpm: Optional[int]
@@ -130,7 +135,9 @@ class LocalTrack:
     file_name: str
     file_path: Path
 
-
+# ------------------------------------------------------------------
+# 토큰 저장/갱신
+# ------------------------------------------------------------------
 class SpotifyTokenStore:
     """Spotify 토큰 저장 및 갱신을 담당한다."""
 
@@ -162,8 +169,7 @@ class SpotifyTokenStore:
             self._data.update(
                 {
                     "access_token": tokens.get("access_token"),
-                    "refresh_token": tokens.get("refresh_token")
-                    or self._data.get("refresh_token"),
+                    "refresh_token": tokens.get("refresh_token") or self._data.get("refresh_token"),
                     "expires_at": expires_at,
                 }
             )
@@ -194,10 +200,11 @@ class SpotifyTokenStore:
         self.update_tokens(tokens)
         return self._data.get("access_token", "")
 
-
 TOKEN_STORE = SpotifyTokenStore(TOKEN_PATH)
 
-
+# ------------------------------------------------------------------
+# 로컬 라이브러리/재생
+# ------------------------------------------------------------------
 class LocalMusicLibrary:
     """CSV 기반 로컬 음악 라이브러리를 관리한다."""
 
@@ -219,15 +226,8 @@ class LocalMusicLibrary:
     def _parse_states(raw: str) -> List[str]:
         if not raw:
             return []
-        separators = [";", ","]
-        states: List[str] = []
-        token = raw
-        for sep in separators:
-            token = token.replace(sep, ";")
-        for part in token.split(";"):
-            cleaned = part.strip()
-            if cleaned:
-                states.append(cleaned.casefold())
+        token = raw.replace(",", ";")
+        states = [p.strip().casefold() for p in token.split(";") if p.strip()]
         return states
 
     def _resolve_file_path(self, file_name: str) -> Path:
@@ -273,10 +273,7 @@ class LocalMusicLibrary:
         with self._lock:
             self._tracks = []
             if not self.csv_path.exists():
-                LOGGER.warning(
-                    "로컬 라이브러리 CSV를 찾을 수 없어 빈 라이브러리로 동작합니다: %s",
-                    self.csv_path,
-                )
+                LOGGER.warning("로컬 라이브러리 CSV를 찾을 수 없어 빈 라이브러리로 동작합니다: %s", self.csv_path)
                 return 0
             with self.csv_path.open("r", encoding="utf-8") as fp:
                 reader = csv.DictReader(fp)
@@ -286,7 +283,7 @@ class LocalMusicLibrary:
                     except LocalLibraryError as exc:
                         LOGGER.warning("로컬 트랙을 무시합니다: %s", exc)
                         continue
-                    except Exception as exc:  # pragma: no cover - 예외 안전장치
+                    except Exception as exc:  # pragma: no cover
                         LOGGER.warning("로컬 트랙 로드 중 알 수 없는 오류: %s", exc)
                         continue
                     self._tracks.append(track)
@@ -299,10 +296,8 @@ class LocalMusicLibrary:
                 raise LocalLibraryError("로컬 라이브러리에 재생 가능한 곡이 없습니다.")
             normalized_state = (state or "").casefold()
             candidates = [
-                track for track in self._tracks if not track.states or normalized_state in track.states
-            ]
-            if not candidates:
-                candidates = list(self._tracks)
+                t for t in self._tracks if not t.states or normalized_state in t.states
+            ] or list(self._tracks)
 
         def score(track: LocalTrack) -> float:
             if bpm_target and track.bpm:
@@ -323,7 +318,6 @@ class LocalMusicLibrary:
         with self._lock:
             return len(self._tracks)
 
-
 class LocalPlaybackEngine:
     """로컬 MP3 재생을 담당하는 엔진."""
 
@@ -339,11 +333,9 @@ class LocalPlaybackEngine:
             def _runner() -> None:
                 try:
                     playsound_sync(str(track.file_path))
-                except Exception as exc:  # pragma: no cover - 외부 재생 오류 대비
-                    LOGGER.error("playsound 재생 중 오류가 발생했습니다: %s", exc)
-
-            thread = threading.Thread(target=_runner, daemon=True)
-            thread.start()
+                except Exception as exc:  # pragma: no cover
+                    LOGGER.error("playsound 재생 중 오류: %s", exc)
+            threading.Thread(target=_runner, daemon=True).start()
             return True
 
         try:
@@ -354,15 +346,16 @@ class LocalPlaybackEngine:
             else:
                 subprocess.Popen(["xdg-open", str(track.file_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
-        except Exception as exc:  # pragma: no cover - OS 종속 오류 대비
-            LOGGER.error("운영체제 기본 플레이어 실행 실패: %s", exc)
+        except Exception as exc:  # pragma: no cover
+            LOGGER.error("OS 기본 플레이어 실행 실패: %s", exc)
             return False
-
 
 LOCAL_LIBRARY = LocalMusicLibrary(Path(os.getenv("LOCAL_MUSIC_DIR", "playback/local_playlist")))
 LOCAL_PLAYBACK_ENGINE = LocalPlaybackEngine(LOCAL_LIBRARY)
 
-
+# ------------------------------------------------------------------
+# 유틸 함수들
+# ------------------------------------------------------------------
 def cleanup_oauth_state() -> None:
     """만료된 OAuth state 값을 정리한다."""
     now = time.time()
@@ -370,14 +363,12 @@ def cleanup_oauth_state() -> None:
         if now - OAUTH_STATE[key] > OAUTH_STATE_TTL:
             OAUTH_STATE.pop(key, None)
 
-
 def determine_mode() -> str:
     """환경 변수 기반 재생 모드를 반환한다."""
     mode = os.getenv("PLAYBACK_MODE", "spotify").lower()
     if mode not in {"spotify", "local"}:
         return "spotify"
     return mode
-
 
 def load_state_params(force: bool = False) -> Dict[str, Any]:
     """상태별 Spotify 파라미터 구성을 로드한다."""
@@ -391,25 +382,17 @@ def load_state_params(force: bool = False) -> Dict[str, Any]:
             LOGGER.info("상태 파라미터 구성을 로드했습니다: %s", STATE_CONFIG_PATH)
             return config
         except FileNotFoundError:
-            LOGGER.warning(
-                "state_params.yaml 파일을 찾을 수 없어 기본값으로 동작합니다: %s",
-                STATE_CONFIG_PATH,
-            )
+            LOGGER.warning("state_params.yaml 파일을 찾을 수 없어 기본값으로 동작합니다: %s", STATE_CONFIG_PATH)
         except yaml.YAMLError as exc:
-            LOGGER.warning(
-                "state_params.yaml 파싱 중 오류가 발생해 기본값으로 동작합니다: %s",
-                exc,
-            )
+            LOGGER.warning("state_params.yaml 파싱 중 오류가 발생해 기본값으로 동작합니다: %s", exc)
         STATE_CONFIG_CACHE.update({"loaded_at": time.time(), "data": DEFAULT_STATE_PARAMS})
         return DEFAULT_STATE_PARAMS
-
 
 def reload_state_params() -> Dict[str, Any]:
     """외부 요청으로 구성 파일을 재로딩한다."""
     config = load_state_params(force=True)
     LOCAL_LIBRARY.reload()
     return config
-
 
 def get_params_for_state(state: str, bpm_target: Optional[int], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """상태와 목표 BPM에 따른 추천 파라미터를 반환한다."""
@@ -418,6 +401,7 @@ def get_params_for_state(state: str, bpm_target: Optional[int], cfg: Dict[str, A
     if not base:
         LOGGER.warning("정의되지 않은 상태(%s)로 요청되어 Focus 기본값을 사용합니다.", state)
         base = cfg.get("Focus", DEFAULT_STATE_PARAMS["Focus"])
+
     tempo_cfg = base.get("tempo", {})
     if bpm_target and bpm_target > 0:
         target = int(bpm_target)
@@ -427,10 +411,12 @@ def get_params_for_state(state: str, bpm_target: Optional[int], cfg: Dict[str, A
         target = int(tempo_cfg.get("target", 105))
         tempo_min = int(tempo_cfg.get("min", max(50, target - 10)))
         tempo_max = int(tempo_cfg.get("max", min(200, target + 10)))
+
     energy_cfg = base.get("energy", {})
     valence_cfg = base.get("valence", {})
     genres = base.get("genres", DEFAULT_STATE_PARAMS["Focus"].get("genres", []))
     market = os.getenv("SPOTIFY_MARKET", "KR")
+
     return {
         "seed_genres": ",".join(genres[:5]) if genres else "",
         "target_tempo": target,
@@ -444,7 +430,6 @@ def get_params_for_state(state: str, bpm_target: Optional[int], cfg: Dict[str, A
         "market": market,
     }
 
-
 def refresh_access_token(refresh_token: str) -> Dict[str, Any]:
     """Refresh Token을 사용해 Access Token을 갱신한다."""
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
@@ -453,17 +438,13 @@ def refresh_access_token(refresh_token: str) -> Dict[str, Any]:
         raise SpotifyAuthError("Spotify 클라이언트 자격 증명이 설정되어 있지 않습니다.")
     token_url = "https://accounts.spotify.com/api/token"
     auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    headers = {
-        "Authorization": f"Basic {auth_header}",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
+    headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/x-www-form-urlencoded"}
     data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
     response = requests.post(token_url, data=data, headers=headers, timeout=10)
     if response.status_code != 200:
         LOGGER.error("Spotify 토큰 갱신 실패: %s", response.text)
         raise SpotifyAuthError("Spotify 토큰 갱신에 실패했습니다. /login을 다시 실행하세요.")
     return response.json()
-
 
 def exchange_code_for_token(code: str) -> Dict[str, Any]:
     """인가 코드를 토큰으로 교환한다."""
@@ -474,17 +455,13 @@ def exchange_code_for_token(code: str) -> Dict[str, Any]:
         raise SpotifyAuthError("Spotify OAuth 설정이 완전하지 않습니다. .env를 확인하세요.")
     token_url = "https://accounts.spotify.com/api/token"
     auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    headers = {
-        "Authorization": f"Basic {auth_header}",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
+    headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/x-www-form-urlencoded"}
     data = {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri}
     response = requests.post(token_url, data=data, headers=headers, timeout=10)
     if response.status_code != 200:
         LOGGER.error("Spotify 인가 코드 교환 실패: %s", response.text)
         raise SpotifyAuthError("Spotify 토큰 발급에 실패했습니다. 다시 로그인하세요.")
     return response.json()
-
 
 def request_spotify_api(method: str, url: str, token: str, **kwargs: Any) -> requests.Response:
     """Spotify Web API 요청을 공통 처리한다."""
@@ -497,7 +474,6 @@ def request_spotify_api(method: str, url: str, token: str, **kwargs: Any) -> req
         raise HTTPException(status_code=502, detail="Spotify API 호출에 실패했습니다.") from exc
     return response
 
-
 def fetch_devices(token: str) -> List[Dict[str, Any]]:
     """Spotify 기기 목록을 가져온다."""
     response = request_spotify_api("GET", "https://api.spotify.com/v1/me/player/devices", token)
@@ -507,7 +483,6 @@ def fetch_devices(token: str) -> List[Dict[str, Any]]:
     data = response.json()
     return data.get("devices", [])
 
-
 def find_device(devices: List[Dict[str, Any]], expected_name: str) -> Optional[Dict[str, Any]]:
     """지정된 이름과 일치하는 디바이스를 찾는다."""
     target = expected_name.casefold()
@@ -516,13 +491,28 @@ def find_device(devices: List[Dict[str, Any]], expected_name: str) -> Optional[D
             return device
     return None
 
+def fetch_audio_features(token: str, track_ids: List[str]) -> Dict[str, float]:
+    """트랙의 오디오 피쳐를 조회해 템포를 얻는다."""
+    if not track_ids:
+        return {}
+    features: Dict[str, float] = {}
+    for i in range(0, len(track_ids), 100):
+        chunk = track_ids[i : i + 100]
+        params = {"ids": ",".join(chunk)}
+        response = request_spotify_api("GET", "https://api.spotify.com/v1/audio-features", token, params=params)
+        if response.status_code != 200:
+            LOGGER.warning("오디오 피쳐 조회 실패: %s", response.text)
+            continue
+        data = response.json()
+        for item in data.get("audio_features", []) or []:
+            if item and item.get("id") and item.get("tempo") is not None:
+                features[item["id"]] = item["tempo"]
+    return features
 
 def fetch_recommendations(token: str, params: Dict[str, Any]) -> List[TrackCandidate]:
     """Spotify 추천 API를 호출한다."""
     query = {k: v for k, v in params.items() if v not in (None, "")}
-    response = request_spotify_api(
-        "GET", "https://api.spotify.com/v1/recommendations", token, params=query
-    )
+    response = request_spotify_api("GET", "https://api.spotify.com/v1/recommendations", token, params=query)
     if response.status_code != 200:
         LOGGER.error("추천 곡 조회 실패: %s", response.text)
         raise HTTPException(status_code=502, detail="Spotify 추천 곡을 가져오지 못했습니다.")
@@ -553,26 +543,6 @@ def fetch_recommendations(token: str, params: Dict[str, Any]) -> List[TrackCandi
         )
     return candidates
 
-
-def fetch_audio_features(token: str, track_ids: List[str]) -> Dict[str, float]:
-    """트랙의 오디오 피쳐를 조회해 템포를 얻는다."""
-    if not track_ids:
-        return {}
-    features: Dict[str, float] = {}
-    for i in range(0, len(track_ids), 100):
-        chunk = track_ids[i : i + 100]
-        params = {"ids": ",".join(chunk)}
-        response = request_spotify_api("GET", "https://api.spotify.com/v1/audio-features", token, params=params)
-        if response.status_code != 200:
-            LOGGER.warning("오디오 피쳐 조회 실패: %s", response.text)
-            continue
-        data = response.json()
-        for item in data.get("audio_features", []) or []:
-            if item and item.get("id") and item.get("tempo") is not None:
-                features[item["id"]] = item["tempo"]
-    return features
-
-
 def call_llm_reranker(state: str, bpm_target: int, candidates: List[TrackCandidate]) -> Optional[List[str]]:
     """LLM 재랭커 서비스 호출."""
     url = os.getenv("LLM_RECOMMENDER_URL")
@@ -594,14 +564,12 @@ def call_llm_reranker(state: str, bpm_target: int, candidates: List[TrackCandida
         LOGGER.warning("LLM 재랭킹 호출 실패: %s", exc)
     return None
 
-
 def rule_based_rerank(bpm_target: int, candidates: List[TrackCandidate]) -> List[TrackCandidate]:
     """템포 차이에 기반한 기본 재랭킹."""
     return sorted(
         candidates,
         key=lambda c: abs(c.tempo - bpm_target) if c.tempo is not None else 9999,
     )
-
 
 def apply_cooldown_filter(candidates: List[TrackCandidate]) -> List[TrackCandidate]:
     """최근 재생한 트랙/아티스트를 제외한다."""
@@ -619,7 +587,6 @@ def apply_cooldown_filter(candidates: List[TrackCandidate]) -> List[TrackCandida
         filtered.append(candidate)
     return filtered
 
-
 def attempt_playback(token: str, device_id: str, candidate: TrackCandidate) -> bool:
     """후보 트랙 재생을 시도한다."""
     payload = {"uris": [candidate.uri]}
@@ -635,7 +602,6 @@ def attempt_playback(token: str, device_id: str, candidate: TrackCandidate) -> b
         return True
     LOGGER.warning("트랙 재생 실패(%s): %s", candidate.uri, response.text)
     return False
-
 
 def log_playback_event(
     state: str,
@@ -656,7 +622,6 @@ def log_playback_event(
         timestamp = datetime.utcnow().isoformat()
         writer.writerow([timestamp, state, bpm_target, device, candidate.uri, source, notes])
 
-
 def record_cooldown(candidate: TrackCandidate) -> None:
     """성공적으로 재생된 트랙과 아티스트를 쿨다운에 등록한다."""
     now = time.time()
@@ -664,7 +629,6 @@ def record_cooldown(candidate: TrackCandidate) -> None:
     for artist in candidate.artists:
         if artist:
             PLAYED_ARTISTS[artist] = now
-
 
 def handle_local_playback(request: PlaybackRequest, source_label: str) -> PlaybackResponse:
     """로컬 라이브러리에서 곡을 선택해 재생한다."""
@@ -712,7 +676,6 @@ def handle_local_playback(request: PlaybackRequest, source_label: str) -> Playba
     LOGGER.info("로컬 음악 재생 성공: %s", response.model_dump())
     return response
 
-
 def build_login_url(state: str) -> str:
     """Spotify 인가 URL을 생성한다."""
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
@@ -730,15 +693,15 @@ def build_login_url(state: str) -> str:
     }
     return f"https://accounts.spotify.com/authorize?{urlencode(params)}"
 
-
-app = FastAPI(title="Playback Server", version="1.0.0")
-
+# ------------------------------------------------------------------
+# FastAPI
+# ------------------------------------------------------------------
+app = FastAPI(title="Playback Server", version="1.1.0")
 
 @app.get("/health")
 def healthcheck() -> Dict[str, str]:
     """상태 확인 엔드포인트."""
     return {"status": "ok"}
-
 
 @app.get("/login")
 def login() -> RedirectResponse:
@@ -749,7 +712,6 @@ def login() -> RedirectResponse:
     login_url = build_login_url(state)
     LOGGER.info("Spotify 로그인 리다이렉트: %s", login_url)
     return RedirectResponse(login_url)
-
 
 @app.get("/callback")
 def callback(
@@ -774,7 +736,6 @@ def callback(
     OAUTH_STATE.pop(state, None)
     return {"message": "Spotify 인증이 완료되었습니다."}
 
-
 @app.get("/devices")
 def list_devices() -> Dict[str, Any]:
     """현재 Spotify 계정의 디바이스 목록을 반환한다."""
@@ -785,10 +746,9 @@ def list_devices() -> Dict[str, Any]:
     devices = fetch_devices(token)
     return {"devices": devices}
 
-
 @app.post("/config/reload")
 def reload_config() -> Dict[str, Any]:
-    """상태별 추천 파라미터 구성을 재로딩한다."""
+    """상태별 추천 파라미터/로컬 라이브러리 구성을 재로딩한다."""
     config = reload_state_params()
     return {
         "loaded": True,
@@ -796,11 +756,9 @@ def reload_config() -> Dict[str, Any]:
         "local_tracks": LOCAL_LIBRARY.count(),
     }
 
-
 def handle_local_mode(request: PlaybackRequest) -> PlaybackResponse:
     """환경 설정이 로컬 모드일 때 로컬 음악을 재생한다."""
     return handle_local_playback(request, "local_mode")
-
 
 @app.post("/set_target", response_model=PlaybackResponse)
 def set_target(request: PlaybackRequest) -> PlaybackResponse:
@@ -808,6 +766,7 @@ def set_target(request: PlaybackRequest) -> PlaybackResponse:
     mode = determine_mode()
     if mode != "spotify":
         return handle_local_mode(request)
+
     try:
         token = TOKEN_STORE.get_access_token()
     except SpotifyAuthError as exc:

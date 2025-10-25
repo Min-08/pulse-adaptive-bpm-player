@@ -1,3 +1,4 @@
+# 상태별 Spotify 추천 기본 파라미터 (필요시 자유롭게 조정 가능)
 # 모든 값은 임시 기본값입니다. 프로젝트 상황에 맞게 자유롭게 조정하세요.
 # 상태 키: HighStress | Focus | Flow | LowFocus
 # 각 상태별로 tempo(최소/목표/최대), energy/valence 범위, seed genres를 정의합니다.
@@ -14,7 +15,7 @@ HighStress:
     min: 0.3
     max: 0.7
   genres: ["ambient", "classical", "piano", "chill"]
-
+  
 Focus:
   tempo:
     min: 95

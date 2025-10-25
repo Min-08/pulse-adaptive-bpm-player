@@ -57,6 +57,7 @@ def configure_logger() -> logging.Logger:
 
 def generate_synthetic_features() -> Dict[str, Any]:
     """랜덤 노이즈를 포함한 합성 생체 특징을 생성한다."""
+    global SESSION_SECONDS
     base_hr = random.uniform(60, 95)
     rmssd = random.uniform(15, 45)
     sdnn = rmssd * random.uniform(1.2, 1.8)
@@ -67,6 +68,8 @@ def generate_synthetic_features() -> Dict[str, Any]:
     sqi = max(0.0, min(1.0, random.uniform(0.3, 0.95)))
     time_of_day = random.choice(["morning", "afternoon", "evening", "night"])
 
+    session_minutes = SESSION_SECONDS // 60
+    SESSION_SECONDS += 10
     return {
         "device_id": "pi-01",
         "features": {
@@ -79,6 +82,7 @@ def generate_synthetic_features() -> Dict[str, Any]:
             "acc_rms": round(acc_rms, 3),
             "sqi": round(sqi, 2),
             "time_of_day": time_of_day,
+            "session_min": int(session_minutes),
         },
     }
 
@@ -95,7 +99,7 @@ def post_json(url: str, payload: Dict[str, Any], timeout: int = 10) -> Optional[
         LOGGER.warning("JSON 파싱 실패: %s", exc)
     return None
 
-
+SESSION_SECONDS = 0
 LOGGER = configure_logger()
 
 
@@ -135,4 +139,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()
