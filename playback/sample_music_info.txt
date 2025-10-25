@@ -1,0 +1,4 @@
+﻿Sample local music metadata for offline mode.
+File: calm_demo.mp3
+BPM: 78
+Mood: Relax

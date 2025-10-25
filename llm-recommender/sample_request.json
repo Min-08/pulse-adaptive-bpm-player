@@ -1,0 +1,8 @@
+﻿{
+  "state": "Focus",
+  "bpm_target": 110,
+  "candidates": [
+    { "id": "song1", "bpm": 108 },
+    { "id": "song2", "bpm": 115 }
+  ]
+}
